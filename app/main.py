@@ -8,7 +8,9 @@ from app.agent.tools import (
     list_work_orders,
     normalize_machine_code,
 )
+from app.agent.tracing import get_agent_trace
 from app.schemas import (
+    AgentTraceResponse,
     ChatRequest,
     ChatResponse,
     MaintenanceRecordResponse,
@@ -19,7 +21,7 @@ from app.schemas import (
 
 app = FastAPI(
     title="FactoryAgent",
-    version="1.1.0",
+    version="1.2.0",
     description=(
         "Manufacturing AI Agent demo with FastAPI, LangGraph, SQLite, "
         "OpenAI-compatible LLM and RAG."
@@ -67,6 +69,14 @@ def work_orders() -> list[dict]:
     return list_work_orders()
 
 
+@app.get("/traces/{run_id}", response_model=AgentTraceResponse)
+def trace(run_id: str) -> dict:
+    result = get_agent_trace(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"trace {run_id} not found")
+    return result
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     try:
@@ -77,6 +87,8 @@ def chat(req: ChatRequest) -> ChatResponse:
             tool_results=result["tool_results"],
             requires_confirmation=result["requires_confirmation"],
             session_id=req.session_id,
+            run_id=result["run_id"],
+            trace=result["trace"],
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

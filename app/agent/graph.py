@@ -1,4 +1,6 @@
-from typing import TypedDict
+import logging
+from typing import Any, TypedDict
+from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
@@ -18,16 +20,38 @@ from app.agent.tools import (
     normalize_machine_code,
     search_manual_tool,
 )
+from app.agent.tracing import persist_agent_trace
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict):
     message: str
     session_id: str
+    run_id: str
     route: str
     machine_code: str
     tool_results: list[dict]
     answer: str
     requires_confirmation: bool
+    trace: list[dict[str, Any]]
+
+
+def append_trace(
+    state: AgentState,
+    node: str,
+    event_type: str,
+    detail: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        *state["trace"],
+        {
+            "node": node,
+            "event_type": event_type,
+            "detail": detail or {},
+        },
+    ]
 
 
 def keyword_route(message: str) -> str:
@@ -50,15 +74,25 @@ def router(state: AgentState) -> AgentState:
 
     if pending and is_confirmation_message(message):
         route = "confirm_work_order"
+        route_source = "pending_confirmation"
     elif pending and is_cancellation_message(message):
         route = "cancel_work_order"
+        route_source = "pending_cancellation"
     else:
-        route = llm_service.classify_intent(message) or keyword_route(message)
+        llm_route = llm_service.classify_intent(message)
+        route = llm_route or keyword_route(message)
+        route_source = "llm" if llm_route else "keyword_fallback"
 
     return {
         **state,
         "route": route,
         "machine_code": normalize_machine_code(message),
+        "trace": append_trace(
+            state,
+            "router",
+            "route_selected",
+            {"route": route, "source": route_source},
+        ),
     }
 
 
@@ -75,6 +109,16 @@ def machine_diagnosis_node(state: AgentState) -> AgentState:
             {"records": records},
             {"manual": manual},
         ],
+        "trace": append_trace(
+            state,
+            "machine_diagnosis",
+            "tools_completed",
+            {
+                "machine_code": code,
+                "maintenance_record_count": len(records),
+                "manual_hit_count": len(manual),
+            },
+        ),
     }
 
 
@@ -85,12 +129,27 @@ def maintenance_records_node(state: AgentState) -> AgentState:
     return {
         **state,
         "tool_results": [status, {"records": records}],
+        "trace": append_trace(
+            state,
+            "maintenance_records",
+            "tools_completed",
+            {"machine_code": code, "maintenance_record_count": len(records)},
+        ),
     }
 
 
 def manual_search_node(state: AgentState) -> AgentState:
     manual = search_manual_tool(state["message"])
-    return {**state, "tool_results": [{"manual": manual}]}
+    return {
+        **state,
+        "tool_results": [{"manual": manual}],
+        "trace": append_trace(
+            state,
+            "manual_search",
+            "tool_completed",
+            {"manual_hit_count": len(manual)},
+        ),
+    }
 
 
 def create_work_order_node(state: AgentState) -> AgentState:
@@ -101,6 +160,12 @@ def create_work_order_node(state: AgentState) -> AgentState:
             **state,
             "tool_results": [status],
             "requires_confirmation": False,
+            "trace": append_trace(
+                state,
+                "create_work_order",
+                "proposal_rejected",
+                {"reason": status["error"]},
+            ),
         }
 
     proposal = build_work_order_proposal(code, state["message"], status)
@@ -109,6 +174,15 @@ def create_work_order_node(state: AgentState) -> AgentState:
         **state,
         "tool_results": [status, {"work_order_proposal": proposal}],
         "requires_confirmation": True,
+        "trace": append_trace(
+            state,
+            "create_work_order",
+            "confirmation_requested",
+            {
+                "machine_code": proposal["machine_code"],
+                "reason": proposal["reason"],
+            },
+        ),
     }
 
 
@@ -119,6 +193,11 @@ def confirm_work_order_node(state: AgentState) -> AgentState:
             **state,
             "tool_results": [{"error": "没有待确认的维修工单。"}],
             "requires_confirmation": False,
+            "trace": append_trace(
+                state,
+                "confirm_work_order",
+                "confirmation_missing",
+            ),
         }
 
     order = create_work_order(proposal["machine_code"], proposal["reason"])
@@ -127,6 +206,12 @@ def confirm_work_order_node(state: AgentState) -> AgentState:
         **state,
         "tool_results": [{"pending_work_order": proposal}, order],
         "requires_confirmation": False,
+        "trace": append_trace(
+            state,
+            "confirm_work_order",
+            "work_order_created",
+            {"work_order_id": order["work_order_id"]},
+        ),
     }
 
 
@@ -137,16 +222,31 @@ def cancel_work_order_node(state: AgentState) -> AgentState:
             **state,
             "tool_results": [{"error": "没有待确认的维修工单。"}],
             "requires_confirmation": False,
+            "trace": append_trace(
+                state,
+                "cancel_work_order",
+                "cancellation_missing",
+            ),
         }
     return {
         **state,
         "tool_results": [{"work_order_cancelled": True, "proposal": proposal}],
         "requires_confirmation": False,
+        "trace": append_trace(
+            state,
+            "cancel_work_order",
+            "work_order_cancelled",
+            {"machine_code": proposal["machine_code"]},
+        ),
     }
 
 
 def general_node(state: AgentState) -> AgentState:
-    return {**state, "tool_results": []}
+    return {
+        **state,
+        "tool_results": [],
+        "trace": append_trace(state, "general", "no_tools_required"),
+    }
 
 
 def answer_node(state: AgentState) -> AgentState:
@@ -155,7 +255,19 @@ def answer_node(state: AgentState) -> AgentState:
         route=state["route"],
         tool_results=state["tool_results"],
     )
-    return {**state, "answer": answer}
+    return {
+        **state,
+        "answer": answer,
+        "trace": append_trace(
+            state,
+            "answer_generation",
+            "answer_created",
+            {
+                "llm_enabled": llm_service.llm_available(),
+                "answer_length": len(answer),
+            },
+        ),
+    }
 
 
 def choose_route(state: AgentState) -> str:
@@ -207,13 +319,28 @@ agent_graph = graph.compile()
 
 
 def run_agent(message: str, session_id: str = "default") -> AgentState:
+    run_id = str(uuid4())
     initial_state: AgentState = {
         "message": message,
         "session_id": session_id,
+        "run_id": run_id,
         "route": "",
         "machine_code": "",
         "tool_results": [],
         "answer": "",
         "requires_confirmation": False,
+        "trace": [],
     }
-    return agent_graph.invoke(initial_state)
+    result = agent_graph.invoke(initial_state)
+    try:
+        persist_agent_trace(
+            run_id=result["run_id"],
+            session_id=result["session_id"],
+            message=result["message"],
+            route=result["route"],
+            events=result["trace"],
+        )
+    except Exception as exc:
+        # Observability must not make a successful business request fail.
+        logger.warning("Could not persist agent trace: %s", exc)
+    return result

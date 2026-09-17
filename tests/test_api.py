@@ -1,10 +1,12 @@
 import os
+import importlib
 
 os.environ["DATABASE_PATH"] = "data/test_factory_agent.db"
 
 from fastapi.testclient import TestClient
 
 from app.agent import llm as llm_service
+from app.agent import session as session_store
 from app.agent.session import clear_pending_work_orders
 from app.config import settings
 from app.main import app
@@ -21,6 +23,51 @@ def test_health():
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+def test_trace_is_returned_and_persisted():
+    r = client.post(
+        "/chat",
+        json={
+            "message": "3号机床今天为什么报警？",
+            "session_id": "trace-test",
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["run_id"]
+    assert data["trace"][0]["node"] == "router"
+    assert any(item["node"] == "answer_generation" for item in data["trace"])
+
+    persisted = client.get(f"/traces/{data['run_id']}")
+    assert persisted.status_code == 200
+    assert persisted.json()["run_id"] == data["run_id"]
+    persisted_events = [
+        (event["node"], event["event_type"], event["detail"])
+        for event in persisted.json()["events"]
+    ]
+    response_events = [
+        (event["node"], event["event_type"], event["detail"])
+        for event in data["trace"]
+    ]
+    assert persisted_events == response_events
+
+
+def test_pending_work_order_is_sqlite_persistent():
+    proposal = {
+        "machine_code": "CNC-003",
+        "machine_name": "3号数控机床",
+        "reason": "主轴过热",
+        "status": "pending_confirmation",
+        "proposed_at": "2026-09-17 21:30:00",
+    }
+    session_store.set_pending_work_order("sqlite-persistence", proposal)
+    importlib.reload(session_store)
+    loaded = session_store.get_pending_work_order("sqlite-persistence")
+    assert loaded is not None
+    assert loaded["machine_code"] == "CNC-003"
+    assert loaded["reason"] == "主轴过热"
+    session_store.pop_pending_work_order("sqlite-persistence")
 
 def test_machine_diagnosis():
     r = client.post("/chat", json={"message": "3号机床今天为什么报警？"})

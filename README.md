@@ -1,4 +1,4 @@
-# FactoryAgent V1.1
+# FactoryAgent V1.2
 
 FactoryAgent 是一个面向制造业设备运维场景的 AI Agent 求职展示项目。它把设备状态、维修历史、设备手册和维修工单串成一条可运行的业务链路，既支持 OpenAI-compatible 大模型，也支持没有 API Key 时的本地 Demo fallback。
 
@@ -6,7 +6,7 @@ FactoryAgent 是一个面向制造业设备运维场景的 AI Agent 求职展示
 
 用户可以用自然语言查询机床状态、诊断报警、查看维修历史、检索设备手册，并通过“先拟定、后确认”的方式创建维修工单。
 
-V1.1 的重点是完整展示 Agent 工程能力：
+V1.2 的重点是完整展示 Agent 工程能力：
 
 - FastAPI API 服务与 Swagger 文档
 - LangGraph 状态化 Agent 流程
@@ -14,7 +14,8 @@ V1.1 的重点是完整展示 Agent 工程能力：
 - OpenAI / DeepSeek / 其他 OpenAI-compatible 接口
 - SQLite 业务数据与设备手册知识库
 - 中文设备手册 RAG 检索
-- 维修工单确认机制，避免首次请求直接写库
+- SQLite 持久化的维修工单确认机制，避免首次请求直接写库
+- 可查询的 Agent 执行轨迹和工具调用摘要
 - 可重复运行的自动化测试
 
 ## 业务背景
@@ -112,7 +113,8 @@ flowchart TD
 4. LangGraph 将请求分发到设备、维修记录、手册或工单节点。
 5. 工具节点只返回可验证的业务数据。
 6. 有 LLM 时由模型组织答案；否则使用本地 fallback 模板。
-7. 工单首次请求只保存进程内待确认草案，确认后才写 SQLite。
+7. 工单首次请求保存到 SQLite 待确认表，确认后才写入正式工单表。
+8. 每次请求生成 `run_id`，轨迹写入 SQLite，并可通过 `/traces/{run_id}` 查询。
 
 ## 项目目录
 
@@ -122,7 +124,8 @@ factory-agent-v1/
 │   ├── agent/
 │   │   ├── graph.py       # LangGraph 路由和业务节点
 │   │   ├── llm.py         # LLM 调用、结构化路由、fallback
-│   │   ├── session.py     # 进程内待确认工单状态
+│   │   ├── session.py     # SQLite 待确认工单状态
+│   │   ├── tracing.py     # Agent 运行轨迹持久化
 │   │   └── tools.py       # 设备、维修、工单和 RAG 工具
 │   ├── rag/
 │   │   └── retriever.py   # SQLite FTS5 + 中文 LIKE fallback
@@ -234,6 +237,14 @@ curl http://127.0.0.1:8000/machines/CNC-003/maintenance
 curl http://127.0.0.1:8000/work-orders
 ```
 
+### Agent 执行轨迹
+
+`POST /chat` 返回 `run_id` 后，可以查询该次请求的路由、节点和工具摘要：
+
+```bash
+curl http://127.0.0.1:8000/traces/<run_id>
+```
+
 ### Agent 对话
 
 ```bash
@@ -294,11 +305,13 @@ python -m compileall -q app
 - LLM 结构化路由
 - LLM 客户端失败自动 fallback
 - 工单确认后才写入数据库
+- 待确认工单跨模块重载仍可从 SQLite 恢复
+- Agent `run_id` 和执行轨迹持久化查询
 - 无效设备编号返回 404
 
 ## 后续规划
 
-以下内容留给 V2，当前 V1.1 不包含：
+以下内容留给后续 V2 规划，当前 V1.2 不包含：
 
 - 向量数据库和更大规模知识库
 - PDF / DOCX 文档解析

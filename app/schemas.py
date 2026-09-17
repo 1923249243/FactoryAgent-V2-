@@ -14,6 +14,8 @@ class ChatResponse(BaseModel):
     tool_results: list[dict[str, Any]]
     requires_confirmation: bool = False
     session_id: str = "default"
+    run_id: str = ""
+    trace: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MachineResponse(BaseModel):
@@ -37,3 +39,20 @@ class WorkOrderResponse(BaseModel):
     reason: str
     status: str
     created_at: str
+
+
+class TraceEventResponse(BaseModel):
+    event_index: int
+    node: str
+    event_type: str
+    detail: dict[str, Any]
+    created_at: str
+
+
+class AgentTraceResponse(BaseModel):
+    run_id: str
+    session_id: str
+    message: str
+    route: str
+    created_at: str
+    events: list[TraceEventResponse]

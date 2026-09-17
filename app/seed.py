@@ -1,4 +1,7 @@
 from pathlib import Path
+
+from app.agent.session import PENDING_SCHEMA
+from app.agent.tracing import TRACE_SCHEMA
 from app.db import get_conn
 
 SCHEMA = """
@@ -31,7 +34,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS manual_docs USING fts5(
     source,
     content
 );
-"""
+""" + PENDING_SCHEMA + TRACE_SCHEMA
 
 def seed():
     Path("data").mkdir(exist_ok=True)
@@ -42,6 +45,9 @@ def seed():
         conn.execute("DELETE FROM maintenance_records")
         conn.execute("DELETE FROM work_orders")
         conn.execute("DELETE FROM manual_docs")
+        conn.execute("DELETE FROM pending_work_orders")
+        conn.execute("DELETE FROM agent_trace_events")
+        conn.execute("DELETE FROM agent_runs")
 
         conn.executemany(
             """
