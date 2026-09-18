@@ -1,0 +1,3 @@
+# Optional rigid-body proxy checker. FreeCAD and CalculiX are installed
+# separately because their native runtimes are not portable Python wheels.
+pybullet==3.2.7

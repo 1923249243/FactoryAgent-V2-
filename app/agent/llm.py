@@ -6,6 +6,8 @@ from typing import Any
 from openai import OpenAI
 
 from app.config import settings
+from app.drawing.schemas import DrawingSpec
+from app.drawing.validator import DrawingValidationError, validate_drawing_spec
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,11 @@ VALID_ROUTES = {
     "manual_search",
     "create_work_order",
     "general",
+    "drawing_create_part",
+    "drawing_create_assembly",
+    "drawing_modify",
+    "drawing_export",
+    "drawing_explain",
 }
 
 
@@ -108,7 +115,10 @@ def classify_intent(message: str) -> str | None:
                     "你是制造业设备运维路由器。只输出 JSON，不要输出解释。"
                     '{"route":"..."}。route 只能是：'
                     "machine_diagnosis、maintenance_records、manual_search、"
-                    "create_work_order、general。"
+                    "create_work_order、general、drawing_create_part、"
+                    "drawing_create_assembly、drawing_modify、drawing_export、"
+                    "drawing_explain。涉及绘图、三视图、STEP、STL、DXF、BOM、"
+                    "装配体或尺寸修改时必须选择 drawing_*。"
                 ),
             },
             {"role": "user", "content": message},
@@ -117,6 +127,43 @@ def classify_intent(message: str) -> str | None:
         response_format={"type": "json_object"},
     )
     return _parse_route(content)
+
+
+def parse_design_intent(message: str) -> DrawingSpec | None:
+    """Ask the configured LLM for DrawingSpec JSON, then validate it."""
+
+    if not llm_available():
+        return None
+    content = _request_completion(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "你是参数化机械绘图意图解析器。只输出 JSON，不要输出 Python 或 SVG。"
+                    "字段必须是 title、drawing_type(part/assembly)、units(mm)、parts。"
+                    "part_type 只能是 plate、flange、shaft、bracket、housing、gear、bearing、motor、fastener；"
+                    "holes 使用 x、y、diameter、through。"
+                    "所有尺寸单位为 mm，不能补造用户没有给出的危险制造参数。"
+                ),
+            },
+            {"role": "user", "content": message},
+        ],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+    if not content:
+        return None
+    candidate = content.strip()
+    start, end = candidate.find("{"), candidate.rfind("}")
+    if start >= 0 and end > start:
+        candidate = candidate[start : end + 1]
+    try:
+        payload = json.loads(candidate)
+        spec = DrawingSpec.model_validate(payload)
+        return validate_drawing_spec(spec)
+    except (json.JSONDecodeError, ValueError, DrawingValidationError) as exc:
+        logger.warning("Invalid DrawingSpec from LLM; using deterministic parser: %s", exc)
+        return None
 
 
 def generate_answer(
@@ -250,5 +297,19 @@ def fallback_answer(route: str, tool_results: list[dict[str, Any]]) -> str:
                 str(item.get("snippet", "")) for item in manual
             )
         return "知识库中没有检索到足够相关的内容。"
+
+    if route.startswith("drawing_"):
+        drawing = _first_result(tool_results, "drawing_id")
+        if drawing:
+            outputs = drawing.get("outputs", {})
+            return (
+                f"已完成绘图任务 {drawing.get('drawing_id')}（修订 {drawing.get('revision', 1)}）。"
+                f"已生成工程展示板、SVG、DXF、STEP、STL 和 BOM；"
+                f"展示板文件：{outputs.get('sheet', 'sheet.svg')}。"
+            )
+        error = _first_result(tool_results, "error")
+        if error:
+            return f"绘图请求未生成：{error.get('error')}"
+        return "我可以根据尺寸参数生成参数化零件、三视图、BOM 和工程展示板。"
 
     return "我可以帮你查询设备状态、维修记录、设备手册，或者创建维修工单。"

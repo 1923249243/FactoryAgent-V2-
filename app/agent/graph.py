@@ -21,6 +21,12 @@ from app.agent.tools import (
     search_manual_tool,
 )
 from app.agent.tracing import persist_agent_trace
+from app.drawing.service import (
+    create_drawing,
+    get_drawing,
+    latest_drawing_id,
+    revise_drawing,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +65,19 @@ def keyword_route(message: str) -> str:
 
     if any(item in message for item in ["创建工单", "建工单", "维修工单", "报修"]):
         return "create_work_order"
+    if any(item in message for item in ["修改", "改成", "改为", "调整", "重新生成"]):
+        if any(item in message for item in ["孔", "孔径", "直径", "厚度", "尺寸", "设计", "图纸"]):
+            return "drawing_modify"
+    if any(item in message for item in ["装配体", "减速器", "PX-2100", "assembly"]):
+        if any(item in message for item in ["修改", "改成", "改为", "调整"]):
+            return "drawing_modify"
+        return "drawing_create_assembly"
+    if any(item in message for item in ["画一个", "绘制", "三视图", "等轴测", "工程图", "DXF", "STEP", "STL", "BOM", "安装板", "法兰", "支架", "箱体"]):
+        if any(item in message for item in ["修改", "改成", "改为", "调整", "重新生成"]):
+            return "drawing_modify"
+        if any(item in message for item in ["输出", "导出", "下载"]):
+            return "drawing_export"
+        return "drawing_create_part"
     if any(item in message for item in ["维修记录", "维修历史", "维护记录", "保养记录"]):
         return "maintenance_records"
     if any(item in message for item in ["手册", "说明书", "知识库", "怎么处理", "如何处理"]):
@@ -241,6 +260,39 @@ def cancel_work_order_node(state: AgentState) -> AgentState:
     }
 
 
+def drawing_node(state: AgentState) -> AgentState:
+    route = state["route"]
+    try:
+        if route in {"drawing_create_part", "drawing_create_assembly"}:
+            record = create_drawing(state["message"])
+        elif route == "drawing_modify":
+            drawing_id = latest_drawing_id()
+            if not drawing_id:
+                raise ValueError("没有可修改的绘图，请先创建一个零件或装配体。")
+            record = revise_drawing(drawing_id, state["message"])
+        else:
+            drawing_id = latest_drawing_id()
+            if not drawing_id:
+                raise ValueError("没有可导出的绘图，请先创建一个零件或装配体。")
+            record = get_drawing(drawing_id)
+        tool_results = [record]
+        event_type = "drawing_completed"
+        detail = {
+            "drawing_id": record.get("drawing_id"),
+            "revision": record.get("revision"),
+            "drawing_type": record.get("drawing_type"),
+        }
+    except Exception as exc:
+        tool_results = [{"error": str(exc)}]
+        event_type = "drawing_failed"
+        detail = {"error": str(exc)}
+    return {
+        **state,
+        "tool_results": tool_results,
+        "trace": append_trace(state, "drawing_agent", event_type, detail),
+    }
+
+
 def general_node(state: AgentState) -> AgentState:
     return {
         **state,
@@ -283,6 +335,7 @@ graph.add_node("manual_search", manual_search_node)
 graph.add_node("create_work_order", create_work_order_node)
 graph.add_node("confirm_work_order", confirm_work_order_node)
 graph.add_node("cancel_work_order", cancel_work_order_node)
+graph.add_node("drawing_agent", drawing_node)
 graph.add_node("general", general_node)
 graph.add_node("answer_generation", answer_node)
 
@@ -298,6 +351,11 @@ graph.add_conditional_edges(
         "create_work_order": "create_work_order",
         "confirm_work_order": "confirm_work_order",
         "cancel_work_order": "cancel_work_order",
+        "drawing_create_part": "drawing_agent",
+        "drawing_create_assembly": "drawing_agent",
+        "drawing_modify": "drawing_agent",
+        "drawing_export": "drawing_agent",
+        "drawing_explain": "drawing_agent",
         "general": "general",
     },
 )
@@ -309,6 +367,7 @@ for node_name in [
     "create_work_order",
     "confirm_work_order",
     "cancel_work_order",
+    "drawing_agent",
     "general",
 ]:
     graph.add_edge(node_name, "answer_generation")

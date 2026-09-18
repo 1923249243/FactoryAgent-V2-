@@ -1,0 +1,5 @@
+# Optional V3 drawing stack. The base requirements keep FactoryAgent usable
+# without native CAD wheels; install this file for real CadQuery STEP/STL.
+cadquery==2.8.0
+ezdxf==1.4.4
+Pillow==12.3.0

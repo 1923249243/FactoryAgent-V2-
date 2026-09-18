@@ -17,6 +17,17 @@ class Settings(BaseModel):
         le=120,
     )
     database_path: str = os.getenv("DATABASE_PATH", "data/factory_agent.db")
+    drawings_dir: str = os.getenv("DRAWINGS_DIR", "data/drawings")
+    engineering_dir: str = os.getenv("ENGINEERING_DIR", "data/engineering")
+    engineering_evidence_dir: str = os.getenv(
+        "ENGINEERING_EVIDENCE_DIR", "data/engineering/v43_real_motor/evidence"
+    )
+    engineering_planner_llm: bool = os.getenv("ENGINEERING_PLANNER_LLM", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 settings = Settings()

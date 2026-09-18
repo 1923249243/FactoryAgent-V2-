@@ -56,3 +56,23 @@ class AgentTraceResponse(BaseModel):
     route: str
     created_at: str
     events: list[TraceEventResponse]
+
+
+class DrawingCreateRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+
+
+class DrawingRevisionRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+
+
+class DrawingResponse(BaseModel):
+    drawing_id: str
+    status: str
+    revision: int
+    drawing_type: str
+    backend: str
+    exporters: dict[str, str | bool] = Field(default_factory=dict)
+    outputs: dict[str, str]
+    bom: list[dict[str, Any]] = Field(default_factory=list)
+    spec: dict[str, Any] = Field(default_factory=dict)
